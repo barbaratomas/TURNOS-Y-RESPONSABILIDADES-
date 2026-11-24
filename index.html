@@ -157,6 +157,7 @@ const DEFAULT = {
   },
   rules:{movil:[1,1,1,1,0,0,1], salida:[1,1,1,1,0,0,0]},
   goal:80,
+  avisos:{tareas:'19:00', movil:'21:50', salida:'07:00'},
   done:{}, weeks:{}, signed:{yo:null, madre:null}
 };
 
@@ -208,6 +209,39 @@ function weekStats(m){
   return {total, done, need, ok: done>=need};
 }
 const weekOf = m => S.weeks[keyOf(m)] || null;
+const BYDAY=['MO','TU','WE','TH','FR','SA','SU'];
+function icsText(t){ return String(t).replace(/\\/g,'\\\\').replace(/,/g,'\\,').replace(/;/g,'\;'); }
+function buildICS(){
+  const now=new Date(), stamp=now.getUTCFullYear()+pad(now.getUTCMonth()+1)+pad(now.getUTCDate())+'T'+pad(now.getUTCHours())+pad(now.getUTCMinutes())+'00Z';
+  const L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Turnos en casa//ES','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:Turnos en casa'];
+  const mon=monday(TODAY());
+  const ev=(uid,dayIdx,time,summary,desc,days)=>{
+    const d=addDays(mon,dayIdx); const [hh,mm]=time.split(':');
+    const dt=d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'T'+pad(+hh)+pad(+mm)+'00';
+    L.push('BEGIN:VEVENT','UID:'+uid+'-'+stamp+'@turnos-casa','DTSTAMP:'+stamp,'DTSTART:'+dt,'DURATION:PT15M','RRULE:FREQ=WEEKLY;BYDAY='+days.join(','),
+      'SUMMARY:'+icsText(summary),'DESCRIPTION:'+icsText(desc),'BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+icsText(summary),'TRIGGER:PT0M','END:VALARM','END:VEVENT');
+  };
+  for(let i=0;i<7;i++){
+    const names=[]; for(const t in TASKS){ const o=S.plan[t][i]; if(o==='yo') names.push(TASKS[t].name); else if(o==='juntos') names.push(TASKS[t].name+' (juntos)'); }
+    if(names.length) ev('tareas-'+i,i,S.avisos.tareas,'Hoy te toca: '+names.join(' · '),'Cuando lo hagas, márcalo en la app Turnos en casa.',[BYDAY[i]]);
+  }
+  const md=[],sd=[]; for(let i=0;i<7;i++){ if(S.rules.movil[i]) md.push(i); if(S.rules.salida[i]) sd.push(i); }
+  if(md.length) ev('movil',md[0],S.avisos.movil,'A las 22:00: móvil al comedor','Déjalo cargando en el comedor.',md.map(i=>BYDAY[i]));
+  if(sd.length) ev('salida',sd[0],S.avisos.salida,'Hoy sales de casa a las 7:30','Prepárate con tiempo.',sd.map(i=>BYDAY[i]));
+  L.push('END:VCALENDAR');
+  return L.join('\r\n');
+}
+function addToCalendar(){
+  const ics=buildICS();
+  const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+  try{
+    if(isIOS){ window.location.href='data:text/calendar;charset=utf-8,'+encodeURIComponent(ics); return; }
+    const url=URL.createObjectURL(new Blob([ics],{type:'text/calendar'}));
+    const a=document.createElement('a'); a.href=url; a.download='avisos-turnos.ics'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);
+    toast('Abre el archivo descargado con tu Calendario');
+  }catch(e){ toast('No se ha podido. Pide el archivo de avisos a tu profesora'); }
+}
 function dayState(date){
   const it=itemsFor('yo',date); if(!it.length) return '';
   const d=it.filter(x=>isDone(date,x.key)).length;
@@ -378,6 +412,13 @@ function viewAjustes(){
     h+='</tr>';
   }
   h+='</tbody></table></section>';
+  h+='<section class="card" style="border-color:#F3C9A1"><h2>Avisos en el móvil</h2><p class="note" style="margin:4px 0 8px">Cada día te llega un aviso con lo que te toca. Se guardan en el Calendario del móvil.</p>'+
+     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">'+
+     '<div class="field" style="margin:0"><label for="a1">Tareas</label><input id="a1" type="time" value="'+esc(S.avisos.tareas)+'"></div>'+
+     '<div class="field" style="margin:0"><label for="a2">Móvil</label><input id="a2" type="time" value="'+esc(S.avisos.movil)+'"></div>'+
+     '<div class="field" style="margin:0"><label for="a3">Salida</label><input id="a3" type="time" value="'+esc(S.avisos.salida)+'"></div></div>'+
+     '<button class="btn btn-p" id="cal" style="width:100%;margin-top:12px">Añadir avisos al Calendario</button>'+
+     '<p class="note" style="margin:8px 0 0">Si cambias el reparto, borra los avisos antiguos del Calendario y vuelve a pulsar.</p></section>';
   h+='<section class="card"><h2>Objetivo semanal</h2><p class="note" style="margin:4px 0 8px">Parte de sus tareas que tiene que hacer para conseguir el premio.</p><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">'+
      [70,80,90,100].map(g=>'<button class="btn '+(S.goal===g?'btn-n':'btn-s')+'" data-g="'+g+'">'+g+' %</button>').join('')+'</div><p class="note" style="margin:8px 0 0">Esta semana: '+weekStats(monday(TODAY())).need+' de '+weekStats(monday(TODAY())).total+' tareas.</p></section>';
   h+='<section class="card"><h2>Copia de seguridad</h2><p class="note" style="margin:4px 0 8px">Todo se guarda solo en este móvil. Si cambias de móvil o borras el navegador, copia antes este código y pégalo después.</p>'+
@@ -425,6 +466,8 @@ function render(){
     nm.onchange=()=>{ S.names.madre=nm.value.trim()||'Mamá'; save(); render(); };
     M.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{ const [t,i]=b.dataset.p.split('|'); const o=S.plan[t][i]; S.plan[t][i]=OWN[(OWN.indexOf(o)+1)%OWN.length]; save(); render(); });
     M.querySelectorAll('[data-r2]').forEach(b=>b.onclick=()=>{ const [r,i]=b.dataset.r2.split('|'); S.rules[r][i]=S.rules[r][i]?0:1; save(); render(); });
+    ['a1','a2','a3'].forEach((id,ix)=>{ const el=M.querySelector('#'+id); el.onchange=()=>{ if(el.value){ S.avisos[['tareas','movil','salida'][ix]]=el.value; save(); } }; });
+    M.querySelector('#cal').onclick=addToCalendar;
     M.querySelectorAll('[data-g]').forEach(b=>b.onclick=()=>{ S.goal=+b.dataset.g; save(); render(); });
     M.querySelector('#bk').onclick=()=>{ const code=btoa(unescape(encodeURIComponent(JSON.stringify(S))));
       const done=()=>toast('Código copiado. Guárdalo en tus notas');
